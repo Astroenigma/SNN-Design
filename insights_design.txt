@@ -1,0 +1,122 @@
+──────────────────────────────────────────────
+DEVELOPER LOGS — NEUROMORPHIC SNN DESIGN
+──────────────────────────────────────────────
+
+1. FUNDAMENTAL CONCEPTS
+──────────────────────────────────────────────
+
+1.1 Leaky Integrate-and-Fire (LIF)
+-----------------------------------
+• Simplified biological neuron model.
+• Membrane potential integrates incoming current:
+      dv/dt = -(v - v_rest)/tau + I
+• When v ≥ v_thresh:
+      → emit spike
+      → reset v = v_reset
+      → enter refractory period
+
+LIFConfig:
+  v_rest = 0.0
+  v_thresh = 0.4
+  tau_mem = 10.0 ms
+  refractory_period = 2.0 ms
+
+1.2 Synapses with Delay
+------------------------
+• Each connection has:
+      - Weight matrix W
+      - Delay buffer (ring buffer)
+• When pre-neuron spikes:
+      I_post[t + delay] += W[pre, post]
+• Implements realistic conduction delay.
+
+1.3 STDP (Spike-Timing-Dependent Plasticity)
+---------------------------------------------
+• Biologically plausible Hebbian learning.
+• If pre → post spike within τ⁺ ms:
+      ΔW = +A_plus * exp(-Δt / τ⁺)
+• If post → pre spike within τ⁻ ms:
+      ΔW = -A_minus * exp(-Δt / τ⁻)
+• In code:
+      pre_trace, post_trace decay each step.
+      On spike → increment.
+      Weight updates use pre/post traces.
+
+1.4 Homeostasis
+---------------
+• Keeps each output neuron’s firing rate near a target (e.g., 5 Hz).
+• Implements negative feedback:
+      bias -= k * (rate - target) * dt
+• Prevents neuron domination or total silence.
+
+1.5 Soft-Winner-Take-All (Soft-WTA)
+-----------------------------------
+• Normalizes output currents around their mean:
+      I_post -= gain * (I_post - mean)
+• Enhances selectivity — small differences in current become bigger
+after thresholding in LIF neurons.
+
+──────────────────────────────────────────────
+2. DESIGN CRITERIA
+──────────────────────────────────────────────
+
+2.1 Modularity
+---------------
+• Every physical or biological concept → its own file/class.
+• Encourages extensibility (replace STDP, add new neurons, etc.)
+• Avoids monolithic scripts.
+
+2.2 Sparse Processing
+---------------------
+• No dense T×N spike arrays.
+• The BinnedEventStream only yields active neuron indices per timestep.
+• Complexity scales with #events, not with N×T.
+
+2.3 Biological Plausibility + Control
+-------------------------------------
+• STDP + LIF ensure temporal learning.
+• Homeostasis maintains firing rate equilibrium.
+• Soft-WTA prevents output collapse.
+
+2.4 Reproducibility
+-------------------
+• All configs are dataclasses (deterministic).
+• Random seeds explicitly passed to constructors.
+
+──────────────────────────────────────────────
+3. SIMULATION FLOW (CONTROL PATH)
+──────────────────────────────────────────────
+
+  1. Load NPZ event data
+  2. Convert timestamps → integer milliseconds
+  3. Bin into discrete 10 ms timesteps
+  4. Build Network (Input–Hidden–Output)
+  5. For each bin:
+        a. Deliver delayed spikes
+        b. Inject active inputs
+        c. Add biases + apply soft-WTA
+        d. Step LIF neurons (integrate + fire)
+        e. STDP weight updates
+        f. Homeostatic adjustment
+  6. Summarize output activity
+
+──────────────────────────────────────────────
+4. NUMERICAL NOTES
+──────────────────────────────────────────────
+
+• dt = 1.0 ms is simulator integration step.
+• bin_ms = 10 groups 10 raw milliseconds per step.
+• Pre/post traces decay exponentially each step.
+• Bias updates in homeostasis are small (bounded ±0.5).
+• Weight clipping keeps W ∈ [0, 2.0].
+
+──────────────────────────────────────────────
+5. EXTENSION IDEAS
+──────────────────────────────────────────────
+
+• Add adaptive thresholds (ALIF) to model fatigue.
+• Add lateral inhibition (subtract current between neighboring outputs).
+• Support multi-synapse STDP (triplet rule).
+• Visualize membrane potential evolution.
+• Build dataset converters (e.g., N-Caltech, DVS Gesture).
+──────────────────────────────────────────────
