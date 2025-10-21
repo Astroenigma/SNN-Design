@@ -1,0 +1,4 @@
+Version: 1.0
+Date: 21-Oct-2025
+Developer: Zoove 
+Notes: Initial modular SNN architecture draft implemented with LIF, STDP, homeostasis, and soft-WTA for event-based data.

@@ -1,0 +1,125 @@
+## Raw event streams processing:
+------------------------------------------------------------------------
+
+Event cameras emit millions of events per second, each carrying microsecond timestamps.
+** question is we are claiming that event sensor is capable of micro second level resolution then again we are binning it for processing
+
+If you directly simulate an SNN at 1 µs resolution,
+→ you’d need millions of time steps for even a 1 s clip.
+That’s impossible in real time and wastes compute, because spikes mostly sit idle between events.
+
+✦ Binning = temporal discretization
+
+We group all events that happened within the same time window (say, 10 ms).
+
+Every 10 ms bin becomes one SNN “timestep”.
+
+Inside that bin, each neuron can get at most one spike.
+
+This drastically reduces time steps from tens of thousands → a few thousand.
+
+✦ Biological intuition
+
+This is analogous to temporal integration windows in biology — neurons integrate spikes over a short window before deciding whether to fire.
+Here, binning gives us the same behavior at a computationally tractable scale.
+
+## exmaple of a tiny event sensor
+
+| dimension                  | value              |
+| :------------------------- | :----------------- |
+| Height (H)                 | 3 pixels           |
+| Width (W)                  | 3 pixels           |
+| Polarity                   | ON (+1) & OFF (−1) |
+| Total input neurons (N_in) | 3×3×2 = **18**     |
+
+## raw events: from sensor
+
+| #  | time (ms) | x  | y  | polarity (+1=ON, -1=OFF) | comment                 |
+| :- | :-------- | :- | :- | :----------------------- | :---------------------- |
+| 1  | 2         | 0  | 0  | +1                       | early ON at top-left    |
+| 2  | 4         | 1  | 2  | -1                       | OFF at middle-bottom    |
+| 3  | 11        | 0  | 0  | -1                       | next bin OFF same pixel |
+| 4  | 15        | 2  | 1  | +1                       | ON right-middle         |
+| 5  | 18        | 1  | 1  | +1                       | ON center               |
+
+## step-1: assigning to bins: bin_ms = 1o ms
+| event | time | bin_index |
+| :---- | :--- | :-------- |
+| 1     | 2    | 0         |
+| 2     | 4    | 0         |
+| 3     | 11   | 1         |
+| 4     | 15   | 1         |
+| 5     | 18   | 1         |
+
+so we have only two bins (T_bins = 2) in this tiny clip.
+
+## step-2: flatten spatial + polarity coordinates
+base = y * W + x
+if use_polarity:
+    ch = 0 if p>0 else 1
+    flat_index = base*2 + ch
+
+| (x,y,p)  |    base | ch | flat_index |
+| :------- | ------: | -: | ---------: |
+| (0,0,+1) | 0×3+0=0 |  0 |          0 |
+| (1,2,-1) | 2×3+1=7 |  1 |   7×2+1=15 |
+| (0,0,-1) |       0 |  1 |          1 |
+| (2,1,+1) | 1×3+2=5 |  0 |         10 |
+| (1,1,+1) | 1×3+1=4 |  0 |          8 |
+
+now each event is represented by a single integer index in [0..17]
+
+## step-3: collections of unique indices per bin:
+
+| bin | event indices (after flatten) |
+| :-- | :---------------------------- |
+| 0   | [0, 15]                       |
+| 1   | [1, 8, 10]                    |
+
+at bin 0 → neuron 0 (0,0,+1) and neuron 15 (1,2,−1) should receive spikes.
+at bin 1 → neurons 1 (0,0,−1), 8 (1,1,+1), 10 (2,1,+1) should receive spikes.
+
+## step-4: creating the array
+here N_in = 18 (3*3*2)
+for bin 0: neuron 0 and neuron 15 is active so putting 1.
+post_curr[0] = [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0]
+
+for bin1: neuron 1,8, 10 are active
+post_curr[0] = [0,1,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,0]
+
+## step-5: feedforward propagation:
+* synapse group will multiples this sparse array to its weight matrix --> currents to hidden neurons.
+* hidden neurons integrates those currents via LIF dynamics
+
+so for each 10 ms bin:
+
+1. deliver delayed spikes,
+
+2. inject sparse input,
+
+3. LIF update + threshold,
+
+4. propagate to next layer,
+
+5. STDP adjusts weights.
+
+## finally
+why this matters
+You never build a giant [T,N] spike matrix.
+You feed the SNN only the active indices each bin.
+The model remains O(#events), not O(T×N).
+
+Biologically, this approximates temporal integration windows — each bin represents what the retina saw in that 10 ms period.
+
+summary:
+
+| concept                    | what it means                                               |
+| :------------------------- | :---------------------------------------------------------- |
+| **event → bin index**      | groups spikes into discrete timesteps (e.g., 10 ms windows) |
+| **flat index**             | converts (x,y,p) to single neuron ID                        |
+| **unique indices per bin** | prevents duplicate spikes in same bin                       |
+| **post_curr[...] += 1.0**  | delivers current to active input neurons only               |
+| **loop continues**         | LIF neurons integrate, fire, learn via STDP                 |
+
+
+-----------------------------------------------------------------------------------
